@@ -1,4 +1,5 @@
 displayName = Master Hand
-author = Webmilio
-version = 0.1
+author = Webmilio, Laugic
+version = 0.5
 modReferences = WebmilioCommons
+tags = library

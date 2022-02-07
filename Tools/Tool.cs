@@ -8,6 +8,11 @@ namespace MasterHand.Tools;
 
 public abstract class Tool
 {
+    protected Tool(PuppetMaster owner)
+    {
+        Owner = owner;
+    }
+
     public virtual bool? UseItem() => null;
 
     public virtual void ModifyInterfaceLayers(List<GameInterfaceLayer> layers) { }
@@ -19,5 +24,5 @@ public abstract class Tool
     public virtual void Deselect() { }
     public virtual void Select() { }
 
-    public PuppetMaster Owner { get; internal set; }
+    public PuppetMaster Owner { get; }
 }

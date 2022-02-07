@@ -1,3 +1,6 @@
-Manager's Hand is a pretty cool mod, it does...this. Modify this file with a description of your mod.
+Master Hand adds the Master Hand as a usable item. Has a 1% drop rate from Skeletron's Hands after the Moon Lord is defeated.
+If you hold an NPC for too long it will probably dissapear.
+
+Works in multiplayer but is kinda woncky with players. Being dead and grabbing things will result in them achieving MACH-10 instantly.
 
 Credits to "EXEcutor-The-Bat" for the Master-Hand sprites.

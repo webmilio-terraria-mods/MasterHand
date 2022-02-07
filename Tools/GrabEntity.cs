@@ -1,22 +1,26 @@
 ﻿using System;
 using System.Collections.Generic;
 using MasterHand.Items;
+using MasterHand.Players;
 using Microsoft.Xna.Framework;
 using Microsoft.Xna.Framework.Graphics;
+using ReLogic.Content;
 using Terraria;
+using Terraria.DataStructures;
 using Terraria.GameInput;
 using Terraria.ModLoader;
 using Terraria.UI;
 using WebmilioCommons.Extensions;
+using WebmilioCommons.Helpers;
 using WebmilioCommons.Tinq;
 
 namespace MasterHand.Tools;
 
 public class GrabEntity : Tool
 {
-    private int _closedDirection;
+    public const int Width = 66, Height = 46;
 
-    private Entity[][] _entities = 
+    private Entity[][] _entities =
     {
         Main.player,
         Main.npc,
@@ -25,11 +29,13 @@ public class GrabEntity : Tool
     };
 
     private bool _mouseLeft;
-    private Vector2 _previousMouseWorld;
+    private Vector2[] _mouseBuffer = new Vector2[2];
+
+    private Rectangle _container;
 
     private readonly GameInterfaceLayer _cursorLayer;
 
-    public GrabEntity()
+    public GrabEntity(PuppetMaster owner) : base(owner)
     {
         _cursorLayer = new HandCursorLayer(this);
     }
@@ -38,74 +44,144 @@ public class GrabEntity : Tool
     {
         Entity entity = null;
 
-        var cursor = Owner.Mod.Assets.Request<Texture2D>(Items.MasterHand.HandEmpty).Value;
-        Rectangle container = new((int)Main.MouseWorld.X - cursor.Width / 2, (int)Main.MouseWorld.Y - cursor.Height / 2, cursor.Width, cursor.Height);
-
         for (int i = 0; i < _entities.Length && entity == null; i++)
         {
-            entity = _entities[i].LastActiveOrDefault(e => container.Contains(e.Center.ToPoint()));
+            entity = _entities[i].LastActiveOrDefault(e => _container.Contains(e.Center.ToPoint()));
         }
 
         if (entity == null)
             return false;
 
+        Grab(entity);
+        return true;
+    }
+
+    public void Grab(Entity entity)
+    {
         Entity = entity;
 
         if (Entity != Owner.Player)
             Entity.active = false;
-
-        return true;
     }
 
-    private void Drop()
+    public void Drop()
     {
         if (Empty)
             return;
 
-        Entity.velocity = (Main.MouseWorld - _previousMouseWorld) / 2;
+        if (Entity is Projectile p)
+        {
+            p.damage += (int)(MouseVelocity.Length() * .66f);
+            p.friendly = true;
+            p.hostile = true;
+        }
+
+        Entity.velocity = MouseVelocity / 2;
         Entity.active = true;
         Entity = null;
     }
 
+    #region Hooks
+
     public override void PreUpdate()
     {
+        if (Owner.IsLocalPlayer())
+            Position = Main.MouseWorld;
+
+        _container = new((int)Position.X - Width / 2, (int)Position.Y - Height / 2, Width, Height);
+
         if (Empty)
-            return;
+        {
+            if (Closed)
+            {
+                var velocity = MouseVelocity;
 
-        Main.cursorAlpha = 0;
+                var absX = MathF.Abs(velocity.X);
+                var absY = MathF.Abs(velocity.Y);
+                var stomp = velocity.Y > 0 && absY * 2 > absX && absX < 10;
 
-        if (Entity is Player p)
-            p.noFallDmg = true;
+                if (!stomp &&
+                    (MathF.Abs(velocity.X) < 10 ||
+                     velocity.X > 0 && LookingDirection > 0 ||
+                     velocity.X < 0 && LookingDirection < 0))
+                {
+                    return; // THE CART'S GOING THE WRONG WAY!!!
+                }
 
-        Entity.Center = Main.MouseWorld;
-        Entity.velocity = Vector2.Zero;
+                Punch(velocity);
+            }
+        }
+        else
+        {
+            Main.cursorAlpha = 0;
+
+            if (Entity is Player p)
+                p.noFallDmg = true;
+
+            Entity.Center = Position;
+            Entity.velocity = Vector2.Zero;
+        }
+
+        Owner.SendIfLocal<GrabEntity_Sync>();
+    }
+
+    private void Punch(Vector2 velocity)
+    {
+        // Paounch
+        var damage = velocity.Length();
+
+        _entities.Do(delegate (Entity[] entities)
+        {
+            entities.WhereActive(entity => _container.Intersects(entity.Hitbox))
+                .Do(delegate (Entity entity)
+                {
+                    if (entity is NPC npc)
+                    {
+                        npc.StrikeNPC((int)damage, 0, -LookingDirection, Main.rand.Next(0, 100) < 15);
+                        npc.velocity += (npc.knockBackResist + 0.1f) * velocity * .33f;
+                    }
+                    else if (entity is Player player)
+                    {
+                        player.Hurt(PlayerDeathReason.ByPlayer(Owner.Player.whoAmI), (int)damage, -LookingDirection);
+
+                        if (!player.noKnockback)
+                            player.velocity += velocity * .20f;
+                    }
+                    else if (entity is Projectile projectile)
+                    {
+                        projectile.velocity += velocity;
+                        projectile.hostile = true;
+                        projectile.friendly = true;
+                    }
+                });
+        });
     }
 
     public override void PostUpdate()
     {
-        _previousMouseWorld = Main.MouseWorld;
+        _mouseBuffer[1] = _mouseBuffer[0];
+        _mouseBuffer[0] = Position;
     }
 
     public override void ProcessTriggers(TriggersSet triggersSet)
     {
-        _prevMouseLeft = _mouseLeft;
         _mouseLeft = triggersSet.MouseLeft;
 
         if (_mouseLeft)
         {
-            if (Grabbed)
-                _closedDirection = GetRelativeDirection();
+            if (Full)
+                LookingDirection = GetRelativeDirection();
 
             if (Empty && !Closed)
                 if (!Grab())
-                    _closedDirection = GetRelativeDirection();
+                    LookingDirection = GetRelativeDirection();
         }
         else
         {
-            if (Grabbed)
+            if (Full)
                 Drop();
 
-            _closedDirection = 0;
+            LookingDirection = 0;
         }
     }
 
@@ -114,51 +190,154 @@ public class GrabEntity : Tool
         Drop();
     }
 
+    #endregion
+
+    #region UI
+
     private const string
         CursorLayerName = "Vanilla: Cursor",
         HoverLayerName = "Vanilla: Mouse Over";
 
     public override void ModifyInterfaceLayers(List<GameInterfaceLayer> layers)
     {
-        var cursorIndex = layers.FindIndex(g => g.Name.Equals(CursorLayerName, StringComparison.OrdinalIgnoreCase));
-        layers.RemoveAt(cursorIndex);
+        if (Owner.IsLocalPlayer())
+        {
+            var cursorIndex = layers.Find(g => g.Name.Equals(CursorLayerName, StringComparison.OrdinalIgnoreCase));
+            layers.Remove(cursorIndex);
 
-        // var hoverIndex = layers.FindIndex(g => g.Name.Equals(HoverLayerName, StringComparison.OrdinalIgnoreCase));
-        layers.Add(_cursorLayer);
+            // var hoverIndex = layers.FindIndex(g => g.Name.Equals(HoverLayerName, StringComparison.OrdinalIgnoreCase));
+            layers.Add(_cursorLayer);
+        }
+        else
+        {
+            var il4 = layers.FindIndex(g => g.Name.Equals(HoverLayerName, StringComparison.OrdinalIgnoreCase));
+            layers.Insert(il4, _cursorLayer);
+        }
     }
 
     private int HandDirection()
     {
-        return _closedDirection == 0 ? GetRelativeDirection() : _closedDirection;
+        if (LookingDirection != 0)
+            return LookingDirection;
+
+        return GetRelativeDirection();
     }
 
-    private int GetRelativeDirection()
+    private byte GetRelativeDirection()
     {
-        return Math.Clamp(Owner.Player.position.X.CompareTo(Main.MouseWorld.X), -1, 1);
+        return (byte) Math.Clamp(Owner.Player.position.X.CompareTo(Position.X), -1, 1);
     }
 
-    public Entity Entity { get; private set; }
+    #endregion
 
-    public bool Grabbed => Entity != null;
-    public bool Closed => Grabbed || _closedDirection != 0;
+    private Entity _entity;
+
+    public Entity Entity
+    {
+        get => _entity;
+        set
+        {
+            if (_entity == value)
+                return;
+
+            _entity = value;
+            Owner.SendIfLocal(new GrabEntity_EntityChanged(value));
+        }
+    }
+
+    public Vector2 MouseVelocity => Position - _mouseBuffer[1];
+    public Vector2 Position { get; set; }
+
     public bool Empty => Entity == null;
+    public bool Full => !Empty;
+
+    public byte LookingDirection { get; set; }
+    public bool Closed => Full || LookingDirection != 0;
 
     private class HandCursorLayer : GameInterfaceLayer
     {
         private readonly GrabEntity _tool;
+        private readonly Asset<Texture2D> _cursor;
+
+        private const int
+            FrameCols = 3,
+            FrameRows = 2,
+            FrameTime = 5,
+            Padding = 2,
+            FullWidth = (Width + Padding) * FrameCols,
+            FullHeight = (Height + Padding) * FrameRows,
+
+            XOffset = Width + Padding,
+            YOffset = Height + Padding;
+
+        private int _frameTimer;
+        private Rectangle _source = new(0, 0, Width, Height);
 
         public HandCursorLayer(GrabEntity tool) : base(GrabEntity.CursorLayerName, InterfaceScaleType.UI)
         {
             _tool = tool;
+            _cursor = _tool.Owner.Mod.Assets.Request<Texture2D>(@"Tools\GrabEntity_Cursor");
         }
 
         protected override bool DrawSelf()
         {
-            var hand = _tool.Owner.Mod.Assets.Request<Texture2D>(_tool.Closed ? Items.MasterHand.HandFull : Items.MasterHand.HandEmpty).Value;
+            void OnFrame(Predicate<Rectangle> condition, Action action)
+            {
+                if (!condition(_source))
+                    return;
 
-            Main.spriteBatch.Draw(hand, Main.MouseScreen,
-                null, Color.White, 0, new(hand.Width / 2, hand.Height / 2), 1,
+                if (_frameTimer < 2)
+                {
+                    _frameTimer++;
+                }
+                else
+                {
+                    action();
+                    _frameTimer = 0;
+                }
+            }
+
+            if (_tool.Closed)
+            {
+                if (_tool.Full)
+                {
+                    _source.Y = 0;
+
+                    OnFrame(
+                        r => r.Right < FullWidth - Padding,
+                        () => _source.Offset(XOffset, 0));
+                }
+                else
+                {
+                    OnFrame(r => r.Right < FullWidth - Padding,
+                        delegate
+                        {
+                            if (_source.Y == 0)
+                            {
+                                _source.Offset(0, YOffset);
+                            }
+                            else
+                            {
+                                _source.Offset(XOffset, 0);
+                            }
+                        });
+                }
+            }
+            else
+            {
+                OnFrame(
+                    r => r.X > 0,
+                    () => _source.Offset(-XOffset, 0));
+
+                OnFrame(
+                    r => r.Y > 0 && r.X == 0,
+                    () => _source.Offset(0, -YOffset));
+            }
+
+            Main.spriteBatch.Draw(_cursor.Value, _tool.Position.ToScreenPosition(),
+                _source, Color.White, 0, new(Width / 2, Height / 2), 1,
                 _tool.HandDirection() == 1 ? SpriteEffects.None : SpriteEffects.FlipHorizontally, 0);
+
             return true;
         }
     }

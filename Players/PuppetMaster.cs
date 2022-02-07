@@ -6,6 +6,8 @@ using Terraria;
 using Terraria.GameInput;
 using Terraria.ModLoader;
 using Terraria.UI;
+using WebmilioCommons.Extensions;
+using WebmilioCommons.Helpers;
 using WebmilioCommons.Players;
 
 namespace MasterHand.Players;
@@ -29,8 +31,7 @@ public class PuppetMaster : BetterModPlayer
 
     private Tool CreateTool(Type type)
     {
-        var tool = Activator.CreateInstance(type) as Tool;
-        tool.Owner = this;
+        var tool = Activator.CreateInstance(type, this) as Tool;
 
         _tools.Add(type, tool);
         return tool;
@@ -62,6 +63,7 @@ public class PuppetMaster : BetterModPlayer
             Tool = _tools[value];
             _toolType = value;
             
+            this.SendIfLocal<ToolSyncPacket>();
             Tool.Select();
         }
     }
@@ -75,6 +77,9 @@ internal class ManagerSystem : ModSystem
 {
     public override void ModifyInterfaceLayers(List<GameInterfaceLayer> layers)
     {
-        PuppetMaster.LocalPlayer.Tool.ModifyInterfaceLayers(layers);
+        PlayersProxy.ForAllPlayers(delegate(PuppetMaster master)
+        {
+            master.Tool.ModifyInterfaceLayers(layers);
+        });
     }
 }
